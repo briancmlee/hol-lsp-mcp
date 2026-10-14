@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hol-lsp-mcp"
+version = "0.1.0"
+description = "MCP server exposing HOL4's language server (hol lsp) to coding agents"
+readme = "README.md"
+license = { text = "BSD-3-Clause" }
+authors = [{ name = "Brian Lee" }]
+requires-python = ">=3.10"
+dependencies = ["mcp>=2.3"]
+
+[project.scripts]
+hol-lsp-mcp = "hol_lsp_mcp.cli:main"
+
+[tool.setuptools]
+packages = ["hol_lsp_mcp"]
