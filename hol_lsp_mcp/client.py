@@ -353,8 +353,11 @@ class LspClient:
                 pass
 
 
-def make_env(extra_path: str | None) -> dict[str, str]:
+def make_env(extra_path: str | None,
+             goalstate_budget_ms: str | None = None) -> dict[str, str]:
     env = dict(os.environ)
     if extra_path:
         env["PATH"] = extra_path + os.pathsep + env.get("PATH", "")
+    if goalstate_budget_ms:
+        env["HOL_LSP_GOALSTATE_BUDGET_MS"] = goalstate_budget_ms
     return env

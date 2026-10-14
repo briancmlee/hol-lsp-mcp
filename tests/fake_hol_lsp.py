@@ -11,6 +11,7 @@ Behaviour on each didOpen/didChange ("compile"):
     or `failed` if its proof contains `FAIL`; a proof containing `SLOW`
     takes 1.5s, and one containing `LOOP` never finishes
   - `DIE` in the text makes the process exit
+  - goalState's note reports HOL_LSP_GOALSTATE_BUDGET_MS as received
 """
 
 import json
@@ -154,7 +155,8 @@ def main():
             send({"jsonrpc": "2.0", "id": mid, "result": {
                 "theorem": "foo", "step": p["character"], "goals": [], "status": "ok",
                 "pretty": "\x1b[34mx\x1b[0m = x", "context": ["branch 1 of 2 of THENL"],
-                "note": None, "error": None}})
+                "note": "budget " + os.environ.get("HOL_LSP_GOALSTATE_BUDGET_MS", "unset"),
+                "error": None}})
         elif method == "textDocument/definition":
             send({"jsonrpc": "2.0", "id": mid, "result": [{"uri": params["textDocument"]["uri"], "range": {
                 "start": {"line": 1, "character": 5}, "end": {"line": 1, "character": 6}}}]})

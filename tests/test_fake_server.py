@@ -192,6 +192,28 @@ class FakeServerTest(unittest.TestCase):
     def test_missing_file(self):
         self.assertIn("no such file", self.m.diagnostics(os.path.join(self.dir, "nope.sml")))
 
+    def test_goalstate_budget_reaches_server(self):
+        # The fake's goalState note echoes HOL_LSP_GOALSTATE_BUDGET_MS.
+        f = self.write("kScript.sml", "Theory k\n")
+        self.assertIn("budget 10000", self.m.goal_state(f, 1, 1))
+        self.m.shutdown()
+        self.m = Manager(Config(hol_bin=self.bin, extra_path=None, max_servers=1,
+                                init_timeout=20, request_timeout=20, quiet_period=0.3,
+                                goalstate_budget_ms="2500"))
+        self.assertIn("budget 2500", self.m.goal_state(f, 1, 1))
+
+    def test_goalstate_budget_from_env(self):
+        key = "HOL_LSP_GOALSTATE_BUDGET_MS"
+        saved = os.environ.pop(key, None)
+        try:
+            self.assertEqual(Config.from_env().goalstate_budget_ms, "10000")
+            os.environ[key] = "30000"
+            self.assertEqual(Config.from_env().goalstate_budget_ms, "30000")
+        finally:
+            os.environ.pop(key, None)
+            if saved is not None:
+                os.environ[key] = saved
+
 
 if __name__ == "__main__":
     unittest.main()

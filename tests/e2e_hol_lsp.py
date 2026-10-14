@@ -57,7 +57,7 @@ def hol_ready(cfg: Config) -> str | None:
     try:
         p = subprocess.run([hol, "lsp"], input=b"".join(encode(m) for m in msgs),
                            capture_output=True, timeout=120, cwd="/tmp",
-                           env=make_env(cfg.extra_path))
+                           env=make_env(cfg.extra_path, cfg.goalstate_budget_ms))
     except (OSError, subprocess.TimeoutExpired) as e:
         return f"`hol lsp` handshake failed: {e}"
     replies = Decoder().feed(p.stdout)

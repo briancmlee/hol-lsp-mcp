@@ -119,3 +119,53 @@ on `plus_zero`. With the multibyte characters in a comment instead, as in
 kind of column, so the client's conversion of positions is not the problem.
 Seen with the `utf-8` position encoding. The hover path seems to give up on
 (or mismeasure) a line with a multibyte character inside a string token.
+
+## 4. The goal-state walker's 1500 ms budget is fixed
+
+**Issue text.**
+
+`$/hol/goalState` walks the proof's tactic stepwise up to the cursor under
+a hard-coded budget, `val walkerBudgetMs = 1500` in
+`tools-poly/lsp/goal_state_init.ML`. A tactic step slower than that makes
+every position after it answer `walker timed out (>1500ms)`. CakeML's CF
+proofs hit this at every position after `xmatch`; a big `EVAL` does too.
+Nothing lets a user or client raise the limit.
+
+**Patch** (branch `lsp-walker-budget` in `~/HOL`, commit 708ff2ef4;
+cherry-picked onto `lsp-failing-proof-fix` in a second clone as eb4162aca,
+with test commit ec9be9532; not pushed): read the budget from the
+environment variable `HOL_LSP_GOALSTATE_BUDGET_MS` once, when
+`goal_state_init.ML` is loaded at server start; keep 1500 when it is unset
+or not a positive integer. The test commit adds an `env` argument to the
+test `Client` and `test_goalState_budget_from_environment` to
+`tools-poly/lsp/tests/lsp_tests.py`: a step that sleeps 3 s times out under
+the default and completes with the variable set to 10000.
+
+Unlike issue 1's patch, this one is a drop-in. `goal_state_init.ML` is
+loaded from source at every server start (`useInit` in `tools-poly/hol.ML`)
+and is not compiled into `bin/hol` or any heap; the only build rule naming
+it is `tools-poly/lsp/tests/Holmakefile`. A restarted server picks up the
+change, and no heap is rebuilt.
+
+hol-lsp-mcp sets `HOL_LSP_GOALSTATE_BUDGET_MS=10000` for the servers it
+starts, unless the variable is already set in its own environment.
+
+## 5. A committed `[projects.<id>].path` is checked before `holproject.local.toml` can override it
+
+Reported by another agent; confirmed by reading
+`tools/Holmake/core/HMProject.sml` (last changed in 0ee914403).
+
+`holproject.local.toml` is meant to let a developer override a committed
+`[projects.<id>]` entry, e.g. to point `path` at their own checkout. But
+`HMProject.load` calls `externals_from_table` on the committed table and
+on the local table separately, and only then removes duplicate ids, keeping
+the local entry. `externals_from_table` is not lazy: for every entry it
+calls `excludes_declared_at <path>`, which (via `read_external_decls`)
+raises `Fail "no holproject.toml at <path>"` when the committed path has
+no `holproject.toml`. So when the committed path does not exist on this
+machine, `load` fails before the local override is consulted, and the
+override cannot rescue it. (A malformed `holproject.toml` at the committed
+path fails the same way.) Workaround: make the committed path exist, e.g.
+a symlink to the real checkout. Fix: deduplicate by id over the raw
+`(id, table)` pairs, local first, and only then resolve paths and read
+excludes.

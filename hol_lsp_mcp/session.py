@@ -123,7 +123,8 @@ class FileSession:
             raise RuntimeError(f"HOL binary not found: {self.config.hol_bin} "
                                "(set HOL_BIN or HOLDIR)")
         self._reset_doc()
-        client = LspClient(argv, cwd=self.dir, env=make_env(self.config.extra_path))
+        client = LspClient(argv, cwd=self.dir, env=make_env(self.config.extra_path,
+                                                                self.config.goalstate_budget_ms))
         caps = {
             "general": {"positionEncodings": ["utf-8"]},
             "textDocument": {"documentSymbol": {"hierarchicalDocumentSymbolSupport": True}},

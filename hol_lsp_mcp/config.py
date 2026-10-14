@@ -13,6 +13,11 @@ def _default_hol_bin() -> str:
     return os.path.expanduser("~/HOL/bin/hol")
 
 
+# HOL's own default (1500ms) is too short for slow tactics such as CF's
+# xmatch: every goalState after one reports "walker timed out".
+DEFAULT_GOALSTATE_BUDGET_MS = "10000"
+
+
 @dataclass
 class Config:
     hol_bin: str
@@ -21,6 +26,9 @@ class Config:
     init_timeout: float = 300.0   # loading a big heap can be slow
     request_timeout: float = 120.0
     quiet_period: float = 1.0     # proof pool settle detection
+    # HOL_LSP_GOALSTATE_BUDGET_MS for the servers: the goalState walker's
+    # time budget in ms.  None leaves the server's environment alone.
+    goalstate_budget_ms: str | None = DEFAULT_GOALSTATE_BUDGET_MS
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -35,4 +43,6 @@ class Config:
             hol_bin=os.path.expanduser(os.environ.get("HOL_BIN") or _default_hol_bin()),
             extra_path=extra,
             max_servers=max_servers,
+            goalstate_budget_ms=(os.environ.get("HOL_LSP_GOALSTATE_BUDGET_MS")
+                                 or DEFAULT_GOALSTATE_BUDGET_MS),
         )

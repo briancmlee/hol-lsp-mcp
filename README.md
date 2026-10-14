@@ -90,6 +90,7 @@ Environment variables:
 | `HOL_BIN` | `$HOLDIR/bin/hol`, else `~/HOL/bin/hol` | the `hol` executable |
 | `HOL_LSP_EXTRA_PATH` | unset | prepended to `PATH` for the server processes (e.g. `~/.local/polyml/bin`) |
 | `HOL_LSP_MCP_MAX_SERVERS` | `3` | how many servers may run at once. Each one holds a HOL heap. |
+| `HOL_LSP_GOALSTATE_BUDGET_MS` | `10000` | passed to the servers: how long (ms) HOL may spend walking a tactic for `goalState`. HOL's own default, 1500, is too short for slow tactics such as CF's `xmatch`; HOL ignores the variable before its `lsp-walker-budget` patch (see `docs/upstream-issues.md`). |
 
 Register it with Claude Code at local scope (the default scope):
 
