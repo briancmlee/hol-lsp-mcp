@@ -232,6 +232,10 @@ class E2E(unittest.TestCase):
         # `proved`.  Only assert it isn't a failure.
         self.assertNotIn("failed:", out)
         self.assertIn("Proofs:", out)
+        # ... so the wrapper's text scan must keep the verdict from being OK.
+        self.assertFalse(out.startswith("OK"), out)
+        self.assertTrue(out.startswith("CHEATS: 1 proof uses cheat (cheaty)"), out)
+        self.assertIn("cheaty (line 12)", out)
 
     def test_blocked_ancestor(self):
         src = ("Theory e2eblk\nAncestors nosuchtheory\n\n"

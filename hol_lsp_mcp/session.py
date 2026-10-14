@@ -15,6 +15,7 @@ import time
 from typing import Any
 
 from . import format as fmt
+from .cheats import find_cheats
 from .client import LspClient, LspError, RequestTimeout, ServerDied, make_env, uri_key
 from .config import Config
 from .positions import UTF16, from_lsp, to_lsp
@@ -216,6 +217,7 @@ class FileSession:
                 d = c.state.diagnostics.get(self.key) or {}
                 result["items"] = list(d.get("items") or [])
                 result["proofs"] = self._live_proofs(c.state.proofs.get(self.key) or {})
+            result["cheats"] = find_cheats(self.text or "")
 
         if self.settled_version == self.version:
             snapshot()

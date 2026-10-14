@@ -30,6 +30,12 @@ only adds what an agent can't easily do itself:
   characters, which is how an agent sees a file full of `∀`, `⇒` and `‘’`. The
   wrapper negotiates `utf-8` with the server and converts in both directions.
   It handles `utf-16` too.
+- **Flagging `cheat`.** The server's pool checks hypotheses, not oracle tags,
+  so it reports a proof that uses `cheat` as `proved`. `diagnostics` therefore
+  also scans the file text for `cheat` as a whole word, skipping comments and
+  string literals. If it finds any, the verdict is never `OK`: it reads
+  `CHEATS: 2 proofs use cheat (foo, bar)`, and each use is listed with its
+  enclosing theorem and line.
 - **Text output.** Results are concise text written for an agent's context,
   not raw JSON.
 
@@ -37,7 +43,7 @@ only adds what an agent can't easily do itself:
 
 | tool | server method | returns |
 |---|---|---|
-| `diagnostics(file, timeout=900)` | `textDocument/publishDiagnostics` + `$/proofStates` | One-line verdict, proof tally (`proved`/`failed`/`suspended`/`diverged`/`cheated`/`checking`) with the non-proved ones named, then the diagnostics. Waits until the compile has finished and the proof pool has settled. On timeout, returns what it has, marked `INCOMPLETE`. |
+| `diagnostics(file, timeout=900)` | `textDocument/publishDiagnostics` + `$/proofStates` | One-line verdict (never `OK` if the text uses `cheat`), proof tally (`proved`/`failed`/`suspended`/`diverged`/`cheated`/`checking`) with the non-proved ones named, then the diagnostics. Waits until the compile has finished and the proof pool has settled. On timeout, returns what it has, marked `INCOMPLETE`. |
 | `goalState(file, line, column)` | `$/hol/goalState` | theorem, step, context tags, note, error, goals (`pretty` without ANSI escapes); says so plainly when the result is `null` |
 | `eval(file, code, timeout=120)` | `$/eval` | errors and warnings with positions in `code`, `compilerOut`/`toplevelOut`, plus any stderr the server wrote meanwhile (see below) |
 | `hover(file, line, column)` | `textDocument/hover` | the hover text |
@@ -104,9 +110,10 @@ Some server behaviour worth knowing:
   first. After you rebuild a dependency with `Holmake`, call `restart`. A
   dependency that was *missing* is re-read on `retryCompile`.
 - **`cheat` is tallied as `proved`.** The pool's verdict compares hypotheses,
-  not oracle tags, so replaying `cheat` succeeds. In the tally, `cheated` means
-  "not being checked": the proof was dropped by an edit, or its tactic didn't
-  compile and it is taken on trust.
+  not oracle tags, so replaying `cheat` succeeds. The wrapper's text scan,
+  described above, makes up for this. In the tally, `cheated` means "not being
+  checked": the proof was dropped by an edit, or its tactic didn't compile and
+  it is taken on trust.
 - **The tally is accumulated from transitions.** The server never retracts a
   name, so the wrapper hides `cheated` entries whose name no longer appears in
   the file. Otherwise deleted or renamed theorems would stay in the tally.

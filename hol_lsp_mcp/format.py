@@ -99,14 +99,29 @@ def format_diagnostics(r: dict, pos: PosFn) -> str:
                 if warnings:
                     verdict += f"; {_plural(len(warnings), 'warning')}"
             elif not errors and set(bad) <= {"cheated"} and not warnings:
-                verdict = f"OK (with cheats): no errors; {proofs_txt}, {len(by['cheated'])} cheated"
+                verdict = f"OK (some proofs unchecked): no errors; {proofs_txt}, {len(by['cheated'])} cheated"
             else:
                 verdict = "PROBLEMS: " + ", ".join(parts) + f"; {proofs_txt}"
         else:
             why = r.get("why", "")
             verdict = (f"INCOMPLETE ({why}): so far " +
                        (", ".join(parts) + "; " if parts else "") + proofs_txt)
+        # The pool reports a replayed `cheat` as proved, so never say OK
+        # for a file that uses it.
+        cheats = r.get("cheats") or []
+        if cheats:
+            names = list(dict.fromkeys(n or f"line {ln}" for n, ln in cheats))
+            what = (f"{_plural(len(names), 'proof')} use{'s' if len(names) == 1 else ''} "
+                    f"cheat ({', '.join(names)})")
+            if verdict.startswith("OK"):
+                verdict = f"CHEATS: {what}; " + verdict.split(": ", 1)[1]
+            else:
+                verdict += f"; {what}"
     out = [verdict]
+    if r.get("cheats"):
+        out.append("Uses of cheat (text scan; the server reports these proofs as proved):")
+        for n, ln in r["cheats"]:
+            out.append(f"  {n or '(outside a named proof)'} (line {ln})")
 
     if total:
         counts = ", ".join(f"{len(by[k])} {k}" for k in PROOF_ORDER if by.get(k))
