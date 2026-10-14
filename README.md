@@ -22,10 +22,17 @@ only adds what an agent can't easily do itself:
 - **File sync from disk.** The agent edits files with its normal tools. Every
   call re-reads the file and sends `didOpen` or a full-text `didChange` if the
   file has changed.
-- **Waiting for results.** `diagnostics` waits for the compile of the current
-  text to finish, then until no proof is still `checking` and the server has
-  been quiet for about a second. If the file hasn't changed since the last
-  such answer, it returns immediately.
+- **Waiting for results, for as long as the agent chooses.** `diagnostics`
+  waits for the compile of the current text to finish, then until no proof
+  is still `checking` and the server has been quiet for about a second. It
+  gives up after `wait` seconds (default 25) and says `INCOMPLETE`, but that
+  cancels nothing: the server carries on, and the next call picks up where
+  this one stopped. For each proof still checking it says how long the
+  wrapper has seen it checking (counted from the last edit at most), next to
+  how long the slowest finished proof in the file took, so that a looping
+  proof stands out. If the file hasn't changed since a settled answer, it
+  returns immediately. Other calls on the same file do not queue behind a
+  waiting `diagnostics`.
 - **Positions.** All lines and columns are 1-based, and columns count Unicode
   characters, which is how an agent sees a file full of `∀`, `⇒` and `‘’`. The
   wrapper negotiates `utf-8` with the server and converts in both directions.
@@ -43,7 +50,7 @@ only adds what an agent can't easily do itself:
 
 | tool | server method | returns |
 |---|---|---|
-| `diagnostics(file, timeout=900)` | `textDocument/publishDiagnostics` + `$/proofStates` | One-line verdict (never `OK` if the text uses `cheat`), proof tally (`proved`/`failed`/`suspended`/`diverged`/`cheated`/`checking`) with the non-proved ones named, then the diagnostics. Waits until the compile has finished and the proof pool has settled. On timeout, returns what it has, marked `INCOMPLETE`. |
+| `diagnostics(file, wait=25)` | `textDocument/publishDiagnostics` + `$/proofStates` | One-line verdict (never `OK` if the text uses `cheat`), proof tally (`proved`/`failed`/`suspended`/`diverged`/`cheated`/`checking`) with the non-proved ones named, then the diagnostics. Returns once the compile has finished and the proof pool has settled, or after `wait` seconds with what it has so far, marked `INCOMPLETE` (see the example below). |
 | `goalState(file, line, column)` | `$/hol/goalState` | theorem, step, context tags, note, error, goals (`pretty` without ANSI escapes); says so plainly when the result is `null` |
 | `eval(file, code, timeout=120)` | `$/eval` | errors and warnings with positions in `code`, `compilerOut`/`toplevelOut`, plus any stderr the server wrote meanwhile (see below) |
 | `hover(file, line, column)` | `textDocument/hover` | the hover text |
@@ -54,6 +61,17 @@ only adds what an agent can't easily do itself:
 | `completion(file, line, column)` | `textDocument/completion` | labels with details, first 50 |
 | `retryCompile(file)` | `$/hol/retryCompile` | sends the notification; call `diagnostics` next |
 | `restart(file)` | (wrapper) | kills and restarts that file's server, e.g. after its dependencies were rebuilt |
+
+An unfinished answer looks like this:
+
+```
+INCOMPLETE after 25s: 48/50 proved, 2 still checking
+The server keeps checking; call diagnostics again to keep waiting.
+Proofs: 48 proved, 2 checking (50 total)
+  par_actions_cong (line 120): checking for 4m12s (finished proofs here took ≤3s)
+  freeze_agree (line 131): checking for 4m12s (finished proofs here took ≤3s)
+Diagnostics: none
+```
 
 ## Setup
 
@@ -123,6 +141,17 @@ Some server behaviour worth knowing:
   output goes to the server's stderr, which the wrapper captures and appends.
   The server's automatic `holdep` preloading may log harmless lines such as
   `Cannot find file PolyML.ui`.
+- **An edit that runs from one proof into the next used to leave the second
+  proof's old check running.** The server decides from where an edit
+  *starts* whether it is confined to one proof. If it is, the server cancels
+  that proof's check and keeps the checks of the proofs below, matching them
+  by name. So if one write changed two proofs, the second one's old tactic
+  kept running, and if that tactic looped, the proof stayed `checking`
+  forever. The wrapper avoids this. When a change starts inside a proof body
+  and runs past its `QED`, it first sends a copy of the new text with a blank
+  line inserted before that declaration, then the real text. The server takes
+  the first as a statement edit and re-checks everything below. A fix for the
+  server is described in `docs/upstream-issues.md`.
 - **Hover returns nothing on a line that contains a string literal with
   non-ASCII characters**, e.g. `val p = ("∀", foo)`. This happens at every
   offset on that line, so it isn't a position-conversion problem.
@@ -134,8 +163,9 @@ Some server behaviour worth knowing:
 .venv/bin/python tests/e2e_hol_lsp.py -v              # against a real hol lsp
 ```
 
-The unit tests cover framing, position conversion, and the session and
-lifecycle logic against a fake server (`tests/fake_hol_lsp.py`). The
+The unit tests cover framing, position conversion, the `cheat` scan, and the
+session and lifecycle logic against a fake server (`tests/fake_hol_lsp.py`),
+including waiting without blocking other calls. The
 end-to-end script skips cleanly if HOL isn't built. Set
 `HOL_LSP_E2E_VERBOSE=1` to see every tool's output.
 

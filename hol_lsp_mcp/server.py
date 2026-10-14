@@ -18,8 +18,14 @@ INSTRUCTIONS = """\
 Tools mirroring HOL4's language server (`hol lsp --lsp-check-proofs`), one
 server per theory script.  Lines and columns are 1-based; columns count
 Unicode characters.  Edit files with your normal tools: every call re-reads
-the file from disk first.  `diagnostics` waits for the compile and the
-proof checks to finish."""
+the file from disk first, and an edit cancels the checks of the old text.
+
+`diagnostics` returns after at most `wait` seconds, like a glance at an IDE.
+Checks carry on in the server, so calling it again continues the wait.  If
+it says INCOMPLETE, it lists each proof still checking and for how long.  A
+proof that has run far longer than its neighbours is probably looping:
+look at goalState before the suspect tactic, or cheat it and move on.
+Other tools answer while diagnostics waits."""
 
 manager: Manager | None = None
 
@@ -45,11 +51,14 @@ mcp = MCPServer("hol-lsp", instructions=INSTRUCTIONS, lifespan=_lifespan)
 
 
 @mcp.tool(structured_output=False)
-async def diagnostics(file: str, timeout: float = 900) -> str:
-    """textDocument/publishDiagnostics + $/proofStates: the file's latest
-    diagnostics and proof tally, once the compile has finished and no proof
-    is still being checked.  Starts with a one-line verdict."""
-    return await _call(_mgr().diagnostics, file, timeout)
+async def diagnostics(file: str, wait: float = 25) -> str:
+    """textDocument/publishDiagnostics + $/proofStates: a one-line verdict,
+    the proof tally and the diagnostics.  Returns once the compile has
+    finished and no proof is still checking, or after `wait` seconds with
+    INCOMPLETE and how long each unfinished proof has been checking.
+    Nothing is cancelled: call again to keep waiting.  (Clients may move
+    calls longer than about two minutes to the background.)"""
+    return await _call(_mgr().diagnostics, file, wait)
 
 
 @mcp.tool(structured_output=False)

@@ -55,6 +55,16 @@ def _plural(n: int, word: str) -> str:
     return f"{n} {word}" + ("" if n == 1 else "s")
 
 
+def duration(secs: float) -> str:
+    """45s, 4m12s, 1h05m."""
+    secs = int(round(secs))
+    if secs < 60:
+        return f"{secs}s"
+    if secs < 3600:
+        return f"{secs // 60}m{secs % 60:02d}s"
+    return f"{secs // 3600}h{secs % 3600 // 60:02d}m"
+
+
 # ------------------------------------------------------------- diagnostics
 
 def proof_tally(proofs: dict[str, dict]) -> dict[str, list[dict]]:
@@ -103,9 +113,17 @@ def format_diagnostics(r: dict, pos: PosFn) -> str:
             else:
                 verdict = "PROBLEMS: " + ", ".join(parts) + f"; {proofs_txt}"
         else:
-            why = r.get("why", "")
-            verdict = (f"INCOMPLETE ({why}): so far " +
-                       (", ".join(parts) + "; " if parts else "") + proofs_txt)
+            # Not a failure: the server carries on, and a later call
+            # picks up where this one stopped.
+            head = f"INCOMPLETE after {duration(r.get('waited', 0))}: "
+            if r.get("why") == "still checking":
+                n = len(by.get("checking", []))
+                rest = [p for p in parts if not p.endswith(" checking")]
+                verdict = (head + f"{proved}/{total} proved, {n} still checking"
+                           + "".join(", " + p for p in rest))
+            else:
+                verdict = (head + r.get("why", "") + "; so far "
+                           + (", ".join(parts) + "; " if parts else "") + proofs_txt)
         # The pool reports a replayed `cheat` as proved, so never say OK
         # for a file that uses it.
         cheats = r.get("cheats") or []
@@ -118,6 +136,8 @@ def format_diagnostics(r: dict, pos: PosFn) -> str:
             else:
                 verdict += f"; {what}"
     out = [verdict]
+    if status == "incomplete":
+        out.append("The server keeps checking; call diagnostics again to keep waiting.")
     if r.get("cheats"):
         out.append("Uses of cheat (text scan; the server reports these proofs as proved):")
         for n, ln in r["cheats"]:
@@ -129,11 +149,18 @@ def format_diagnostics(r: dict, pos: PosFn) -> str:
         if others:
             counts += ", " + ", ".join(f"{len(by[k])} {k}" for k in others)
         out.append(f"Proofs: {counts} ({total} total)")
+        checking = r.get("checking") or {}
+        base = r.get("baseline")
+        base_txt = f" (finished proofs here took ≤{duration(max(base, 1))})" if base is not None else ""
         for k in PROOF_ORDER[1:] + others:
             for st in sorted(by.get(k, []), key=lambda s: (s.get("pos") or {}).get("line", 0)):
                 where = ""
                 if st.get("pos"):
                     where = f" (line {pos(None, st['pos'])[0]})"
+                if k == "checking" and st.get("name") in checking:
+                    out.append(f"  {st.get('name')}{where}: checking for "
+                               f"{duration(checking[st['name']])}{base_txt}")
+                    continue
                 line = f"  {k}: {st.get('name')}{where}"
                 det = st.get("detail")
                 if det:

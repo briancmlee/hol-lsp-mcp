@@ -7,6 +7,7 @@ the file from disk and syncs it to the server.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import pathlib
 import re
@@ -15,20 +16,76 @@ import time
 from typing import Any
 
 from . import format as fmt
-from .cheats import find_cheats
+from .cheats import find_cheats, mask
 from .client import LspClient, LspError, RequestTimeout, ServerDied, make_env, uri_key
 from .config import Config
 from .positions import UTF16, from_lsp, to_lsp
 
 LANGUAGE_ID = "holsml"
 # A compile that was interrupted and not restarted for this long is
-# taken as over (otherwise `diagnostics` would wait for the full timeout).
+# taken as over (otherwise `diagnostics` would always use its full `wait`).
 INTERRUPTED_GRACE = 30.0
+CHANGED = object()  # `_wait`: another call synced a newer text meanwhile
+
+PROOF_HEAD = re.compile(r"^(?:Theorem|Triviality|Lemma)\b", re.M)
+PROOF = re.compile(r"^Proof\b", re.M)
+QED = re.compile(r"^QED\b", re.M)
+
+
+class Superseded(Exception):
+    """The server was stopped or replaced while a call waited without the
+    session's lock.  The caller starts over."""
 
 
 def read_text(path: str) -> str:
     with open(path, "rb") as f:
         return f.read().decode("utf-8", "replace")
+
+
+@contextlib.contextmanager
+def released(lock: threading.RLock):
+    """Let go of `lock` (held once by this thread) for the duration."""
+    lock.release()
+    try:
+        yield
+    finally:
+        lock.acquire()
+
+
+def proof_edit_start(old: str, new: str) -> int | None:
+    """Where the declaration starts, if the change from `old` to `new`
+    starts inside a `Proof ... QED` body and runs past that body's `QED`.
+
+    `hol lsp` decides that an edit is confined to one proof from where the
+    edit starts.  It then cancels just that proof's check and reuses, by
+    name, the checks still running on the proofs below, even if the same
+    edit changed their tactics.  A changed proof below then shows the
+    result of its old text, or `checking` for good if the old text looped.
+    `sync` avoids this by touching the declaration's start first, which
+    the server treats as a statement edit: it cancels everything below."""
+    pre = 0
+    n = min(len(old), len(new))
+    while pre < n and old[pre] == new[pre]:
+        pre += 1
+    suf = 0
+    while suf < n - pre and old[-1 - suf] == new[-1 - suf]:
+        suf += 1
+    end = len(new) - suf  # the changed region of `new` is [pre, end)
+    clean = mask(new)
+    head = None
+    for head in PROOF_HEAD.finditer(clean, 0, pre):
+        pass
+    if head is None:
+        return None
+    body = PROOF.search(clean, head.end(), pre)
+    if body is None:
+        return None
+    qed = QED.search(clean, body.end())
+    if qed is not None and qed.start() < pre:
+        return None  # the change starts after this proof
+    if qed is None or end > qed.start():
+        return head.start()
+    return None
 
 
 class FileSession:
@@ -42,6 +99,7 @@ class FileSession:
         self.client: LspClient | None = None
         self.encoding = UTF16
         self.last_used = time.monotonic()
+        self.waiters = 0  # calls waiting without `lock`; guarded by `lock`
         self._reset_doc()
 
     def _reset_doc(self) -> None:
@@ -50,6 +108,7 @@ class FileSession:
         self.text: str | None = None
         self.sync_seq = 0
         self.settled_version: int | None = None
+        self.changed_at = time.monotonic()  # last didOpen/didChange
         self.msg_cursor = 0
         self._other_text: dict[str, tuple[float, str | None]] = {}
 
@@ -112,6 +171,14 @@ class FileSession:
                 "version": self.version, "text": text}})
             self.opened = True
         elif text != self.text:
+            at = proof_edit_start(self.text or "", text)
+            if at is not None:
+                # See `proof_edit_start`: a blank line before the
+                # declaration, at once superseded by the real text.
+                self.version += 1
+                c.notify("textDocument/didChange", {
+                    "textDocument": {"uri": self.uri, "version": self.version},
+                    "contentChanges": [{"text": text[:at] + "\n" + text[at:]}]})
             self.version += 1
             self.sync_seq = c.notify("textDocument/didChange", {
                 "textDocument": {"uri": self.uri, "version": self.version},
@@ -120,6 +187,7 @@ class FileSession:
             return
         self.text = text
         self.settled_version = None
+        self.changed_at = time.monotonic()
 
     def new_server_messages(self) -> list[str]:
         """window/showMessage lines received since the last call."""
@@ -170,19 +238,22 @@ class FileSession:
 
     # ------------------------------------------------------- compile state
 
-    def _compile_done(self) -> Any:
-        """The compile event that ends the compile of the current version, if
-        it has arrived.  Called with the client's cond held."""
+    def _compile_done(self, version: int | None = None, sync_seq: int | None = None) -> Any:
+        """The compile event that ends the compile of `version` (sent at
+        `sync_seq`; default: the current ones), if it has arrived.  Called
+        with the client's cond held."""
+        version = self.version if version is None else version
+        sync_seq = self.sync_seq if sync_seq is None else sync_seq
         c = self._c()
         st = c.state
         for ev in reversed(st.compile_events):
-            if ev.seq <= self.sync_seq:
+            if ev.seq <= sync_seq:
                 break
             if uri_key(ev.params.get("uri", "")) != self.key:
                 continue
             if ev.kind == "blocked":
                 return ev
-            if ev.kind == "completed" and st.diag_version.get(self.key, -1) >= self.version:
+            if ev.kind == "completed" and st.diag_version.get(self.key, -1) >= version:
                 return ev
             if (ev.kind == "interrupted" and not st.progress_active
                     and st.progress_seq < ev.seq
@@ -204,67 +275,108 @@ class FileSession:
 
     # ----------------------------------------------------------- methods
 
-    def diagnostics(self, timeout: float = 900.0) -> dict:
-        """Wait for the compile of the current text and for the proof pool
-        to settle; return {status, items, proofs, blocked, why}."""
-        c = self._c()
-        start = time.monotonic()
-        deadline = start + timeout
-        result: dict[str, Any] = {"status": "settled", "why": ""}
+    def _wait(self, c: LspClient, mark: tuple[int, int], pred, deadline: float,
+              poll: float = 0.25) -> Any:
+        """`c.wait_until(pred)` until `deadline`, without holding `lock`, so
+        that other calls on this file are not stuck behind the wait.
+        Returns pred's value, None at the deadline, or CHANGED if another
+        call synced a newer text (or sent retryCompile) meanwhile.  Raises
+        Superseded if the server was stopped or replaced meanwhile.
+        Called with `lock` held once."""
+        def p() -> Any:
+            return CHANGED if (self.version, self.sync_seq) != mark else pred()
 
-        def snapshot() -> None:
-            with c.cond:
-                d = c.state.diagnostics.get(self.key) or {}
-                result["items"] = list(d.get("items") or [])
-                result["proofs"] = self._live_proofs(c.state.proofs.get(self.key) or {})
-            result["cheats"] = find_cheats(self.text or "")
+        died = None
+        self.waiters += 1
+        try:
+            with released(self.lock):
+                try:
+                    r = c.wait_until(p, max(0.0, deadline - time.monotonic()), poll)
+                except ServerDied as e:
+                    died = e
+        finally:
+            self.waiters -= 1
+        if self.client is not c:
+            raise Superseded()
+        if died is not None:
+            raise died
+        return CHANGED if (self.version, self.sync_seq) != mark else r
 
-        if self.settled_version == self.version:
-            snapshot()
-            result["blocked"] = self.last_blocked()
-            if result["blocked"]:
-                result["status"] = "blocked"
-            return result
+    def diagnostics(self, deadline: float, start: float | None = None) -> dict:
+        """Wait, until `deadline` at most, for the compile of the current
+        text and for the proof pool to settle.  Returns {status, why,
+        waited, items, proofs, cheats, checking, baseline, blocked}, where
+        status is settled, blocked or incomplete.  Returning early stops
+        nothing: the server carries on checking.  `start` is when the
+        caller started waiting, for reporting."""
+        start = time.monotonic() if start is None else start
+        while True:
+            c = self._c()
+            mark = version, sync_seq = self.version, self.sync_seq
+            result: dict[str, Any] = {"status": "settled", "why": ""}
 
-        ev = c.wait_until(self._compile_done, max(0.0, deadline - time.monotonic()))
-        if ev is None:
-            result.update(status="timeout",
-                          why=f"timed out after {timeout:g}s; the compile has not finished")
-            snapshot()
-            return result
-        if ev.kind == "blocked":
-            result.update(status="blocked", blocked=ev.params)
-            # Give the load-failure diagnostics a moment to arrive.
-            c.wait_until(lambda: False, 0.3)
-            snapshot()
-            self.settled_version = self.version
-            return result
-        if ev.kind == "interrupted":
-            result.update(status="timeout", why="the compile was interrupted and did not restart")
-            snapshot()
-            return result
+            def snapshot() -> dict:
+                now = time.monotonic()
+                with c.cond:
+                    d = c.state.diagnostics.get(self.key) or {}
+                    result["items"] = list(d.get("items") or [])
+                    result["proofs"] = self._live_proofs(c.state.proofs.get(self.key) or {})
+                    # Counted from the last edit at the latest: what ran
+                    # before it was checking a different text.
+                    since = c.state.checking_since.get(self.key) or {}
+                    result["checking"] = {n: now - max(t, self.changed_at)
+                                          for n, t in since.items()}
+                    secs = (c.state.check_secs.get(self.key) or {}).values()
+                    result["baseline"] = max(secs) if secs else None
+                result["cheats"] = find_cheats(self.text or "")
+                result["waited"] = now - start
+                return result
 
-        done_at = time.monotonic()
-        quiet = self.config.quiet_period
+            if self.settled_version == version:
+                snapshot()
+                result["blocked"] = self.last_blocked()
+                if result["blocked"]:
+                    result["status"] = "blocked"
+                return result
 
-        def settled() -> bool:
-            st = c.state
-            if st.progress_active:
-                return False
-            if any(s.get("status") == "checking" for s in (st.proofs.get(self.key) or {}).values()):
-                return False
-            last = max(done_at, st.activity.get(self.key, (0, 0.0))[1])
-            return time.monotonic() - last >= quiet
+            ev = self._wait(c, mark, lambda: self._compile_done(version, sync_seq), deadline)
+            if ev is CHANGED:
+                continue
+            if ev is None:
+                result.update(status="incomplete", why="still compiling")
+                return snapshot()
+            if ev.kind == "blocked":
+                result.update(status="blocked", blocked=ev.params)
+                # Give the load-failure diagnostics a moment to arrive.
+                c.wait_until(lambda: False, 0.3)
+                self.settled_version = version
+                return snapshot()
+            if ev.kind == "interrupted":
+                result.update(status="incomplete",
+                              why="the compile was interrupted and did not restart")
+                return snapshot()
 
-        ok = c.wait_until(settled, max(0.0, deadline - time.monotonic()), poll=0.2)
-        snapshot()
-        if not ok:
-            n = sum(1 for s in result["proofs"].values() if s.get("status") == "checking")
-            result.update(status="timeout",
-                          why=f"timed out after {timeout:g}s; {n} proofs still checking")
-            return result
-        self.settled_version = self.version
-        return result
+            done_at = time.monotonic()
+            quiet = self.config.quiet_period
+
+            def settled() -> bool:
+                st = c.state
+                if st.progress_active:
+                    return False
+                if any(s.get("status") == "checking"
+                       for s in (st.proofs.get(self.key) or {}).values()):
+                    return False
+                last = max(done_at, st.activity.get(self.key, (0, 0.0))[1])
+                return time.monotonic() - last >= quiet
+
+            ok = self._wait(c, mark, settled, deadline, poll=0.2)
+            if ok is CHANGED:
+                continue
+            if not ok:
+                result.update(status="incomplete", why="still checking")
+                return snapshot()
+            self.settled_version = version
+            return snapshot()
 
     def _live_proofs(self, proofs: dict[str, dict]) -> dict[str, dict]:
         """The accumulated proof states, minus `cheated` entries for names no

@@ -75,6 +75,10 @@ class ServerState:
     diag_version: dict[str, int] = field(default_factory=dict)
     # uri key -> {proof name -> state dict (pos, name, status, detail)}
     proofs: dict[str, dict[str, dict]] = field(default_factory=dict)
+    # uri key -> {proof name -> monotonic time we first saw it `checking`}
+    checking_since: dict[str, dict[str, float]] = field(default_factory=dict)
+    # uri key -> {proof name -> seconds its last finished check took}
+    check_secs: dict[str, dict[str, float]] = field(default_factory=dict)
     # uri key -> (seq, monotonic time) of the last proofStates/diagnostics
     activity: dict[str, tuple[int, float]] = field(default_factory=dict)
     compile_events: collections.deque = field(
@@ -215,11 +219,23 @@ class LspClient:
         elif method == "$/proofStates":
             key = uri_key(params.get("uri", ""))
             table = st.proofs.setdefault(key, {})
+            since = st.checking_since.setdefault(key, {})
+            now = time.monotonic()
             for s in params.get("states") or []:
                 name = s.get("name")
-                if name is not None:
-                    table[name] = s
-            st.activity[key] = (seq, time.monotonic())
+                if name is None:
+                    continue
+                table[name] = s
+                # The server re-announces a proof that an edit moved, so
+                # only a proof not already checking starts the clock.
+                status = s.get("status")
+                if status == "checking":
+                    since.setdefault(name, now)
+                elif name in since:
+                    t0 = since.pop(name)
+                    if status != "cheated":  # cheated = dropped, not finished
+                        st.check_secs.setdefault(key, {})[name] = now - t0
+            st.activity[key] = (seq, now)
         elif method in COMPILE_EVENTS:
             st.compile_events.append(CompileEvent(seq, COMPILE_EVENTS[method], params))
         elif method == "$/compileProgress":

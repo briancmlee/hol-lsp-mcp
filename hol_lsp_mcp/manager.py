@@ -3,7 +3,9 @@
 One `FileSession` per file, at most `max_servers` running; the least
 recently used idle one is shut down to make room.  Each operation takes
 the session's lock (so calls on one file serialise), restarts a dead
-server, re-syncs the file from disk, and returns text.
+server, re-syncs the file from disk, and returns text.  `diagnostics`
+lets go of the lock while it waits for the server, so other calls on the
+file are not stuck behind it.
 """
 
 from __future__ import annotations
@@ -19,7 +21,7 @@ from . import format as fmt
 from .client import LspError, RequestTimeout, ServerDied
 from .config import Config
 from .positions import from_lsp
-from .session import FileSession
+from .session import FileSession, Superseded
 
 log = logging.getLogger(__name__)
 
@@ -50,6 +52,9 @@ class Manager:
                 if excess <= 0:
                     break
                 if victim.lock.acquire(blocking=False):
+                    if victim.waiters:  # a diagnostics call is waiting on it
+                        victim.lock.release()
+                        continue
                     del self._sessions[victim.path]
                     evict.append(victim)
                     excess -= 1
@@ -126,8 +131,14 @@ class Manager:
 
     # ---------------------------------------------------------- operations
 
-    def diagnostics(self, file: str, timeout: float = 900) -> str:
-        return self._run(file, lambda s: s.format_diagnostics(s.diagnostics(timeout)))
+    def diagnostics(self, file: str, wait: float = 25) -> str:
+        start = time.monotonic()
+        deadline = start + wait
+        while True:
+            try:
+                return self._run(file, lambda s: s.format_diagnostics(s.diagnostics(deadline, start)))
+            except Superseded:
+                continue  # restarted while we waited: wait on the new server
 
     def goal_state(self, file: str, line: int, column: int) -> str:
         def op(s: FileSession) -> str:

@@ -8,7 +8,8 @@ Behaviour on each didOpen/didChange ("compile"):
   - every word `BAD` gives an error diagnostic at its position (utf-8 bytes)
   - `Ancestors missing` gives `$/compileBlocked` instead
   - every `Theorem NAME` is announced `checking`, then after 0.3s `proved`,
-    or `failed` if its proof contains `FAIL`
+    or `failed` if its proof contains `FAIL`; a proof containing `SLOW`
+    takes 1.5s, and one containing `LOOP` never finishes
   - `DIE` in the text makes the process exit
 """
 
@@ -97,16 +98,18 @@ def compile_(uri, text, version, my_gen):
             {"pos": pos_of(text, len(text[:start].encode())), "name": name, "status": "checking"}]})
     notify("$/compileCompleted", {"uri": uri})
 
-    def finish():
-        time.sleep(0.3)
-        for name, start, end in thms:
-            body = text[start:end]
-            st = {"pos": pos_of(text, len(text[:start].encode())), "name": name,
-                  "status": "failed" if "FAIL" in body else "proved"}
-            if "FAIL" in body:
-                st["detail"] = "tactic FAIL failed"
-            notify("$/proofStates", {"uri": uri, "states": [st]})
-    threading.Thread(target=finish, daemon=True).start()
+    def finish(name, start, end):
+        body = text[start:end]
+        if "LOOP" in body:
+            return
+        time.sleep(1.5 if "SLOW" in body else 0.3)
+        st = {"pos": pos_of(text, len(text[:start].encode())), "name": name,
+              "status": "failed" if "FAIL" in body else "proved"}
+        if "FAIL" in body:
+            st["detail"] = "tactic FAIL failed"
+        notify("$/proofStates", {"uri": uri, "states": [st]})
+    for thm in thms:
+        threading.Thread(target=finish, args=thm, daemon=True).start()
 
 
 def main():

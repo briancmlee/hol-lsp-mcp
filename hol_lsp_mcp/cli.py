@@ -1,7 +1,7 @@
 """Command line front end on the same core, for trying things without an agent.
 
     python -m hol_lsp_mcp serve                      # MCP server on stdio
-    python -m hol_lsp_mcp diagnostics FILE [--timeout S]
+    python -m hol_lsp_mcp diagnostics FILE [--wait S]
     python -m hol_lsp_mcp goalState FILE LINE COLUMN
     python -m hol_lsp_mcp eval FILE CODE
     python -m hol_lsp_mcp hover|definition|references|completion FILE LINE COLUMN
@@ -36,7 +36,8 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("serve", help="run the MCP server over stdio")
     p = sub.add_parser("diagnostics")
     p.add_argument("file")
-    p.add_argument("--timeout", type=float, default=900)
+    # Longer than the tool's default: the server exits with the command.
+    p.add_argument("--wait", type=float, default=300)
     for name in POSITIONAL:
         p = sub.add_parser(name)
         p.add_argument("file")
@@ -68,7 +69,7 @@ def main(argv: list[str] | None = None) -> int:
         if getattr(args, "no_wait", True) is False:
             m.wait_compiled(args.file)
         if args.cmd == "diagnostics":
-            out = m.diagnostics(args.file, args.timeout)
+            out = m.diagnostics(args.file, args.wait)
         elif args.cmd in POSITIONAL:
             out = getattr(m, POSITIONAL[args.cmd])(args.file, args.line, args.column)
         elif args.cmd == "eval":

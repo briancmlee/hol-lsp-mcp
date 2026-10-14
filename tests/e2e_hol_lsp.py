@@ -19,6 +19,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 
@@ -118,7 +119,7 @@ class E2E(unittest.TestCase):
         f = write("e2ecleanScript.sml", CLEAN)
         lines = CLEAN.split("\n")
         t0 = time.monotonic()
-        out = show("diagnostics clean", M.diagnostics(f, timeout=180))
+        out = show("diagnostics clean", M.diagnostics(f, wait=180))
         self.assertTrue(out.startswith("OK: compiled with no errors; 2/2 proofs proved"), out)
         # Unchanged file: answered from the settled state.
         t1 = time.monotonic()
@@ -181,17 +182,17 @@ class E2E(unittest.TestCase):
 
         # An edit is picked up from disk.
         write("e2ecleanScript.sml", CLEAN + "\nval bad = 3 + true\n")
-        out2 = show("diagnostics after edit", M.diagnostics(f, timeout=180))
+        out2 = show("diagnostics after edit", M.diagnostics(f, wait=180))
         self.assertTrue(out2.startswith("PROBLEMS: 1 error"), out2)
         write("e2ecleanScript.sml", CLEAN)
-        out3 = show("diagnostics after revert", M.diagnostics(f, timeout=180))
+        out3 = show("diagnostics after revert", M.diagnostics(f, wait=180))
         self.assertTrue(out3.startswith("OK"), out3)
 
     def test_type_error(self):
         src = ("Theory e2ebad\n\n"
                "val x = (\"‘’\", 3 + true)\n")
         f = write("e2ebadScript.sml", src)
-        out = show("diagnostics type error", M.diagnostics(f, timeout=180))
+        out = show("diagnostics type error", M.diagnostics(f, wait=180))
         self.assertTrue(out.startswith("PROBLEMS:"), out)
         self.assertRegex(out, r"Type error|Can't unify")
         m = re.search(r"(?m)^  3:(\d+)", out)
@@ -206,7 +207,7 @@ class E2E(unittest.TestCase):
                "  ACCEPT_TAC TRUTH\n"
                "QED\n")
         f = write("e2efailScript.sml", src)
-        out = show("diagnostics failing tactic", M.diagnostics(f, timeout=180))
+        out = show("diagnostics failing tactic", M.diagnostics(f, wait=180))
         self.assertTrue(out.startswith("PROBLEMS:"), out)
         self.assertIn("failed: bar", out)
         gs = show("goalState failing tactic", M.goal_state(f, 6, 19))
@@ -226,7 +227,7 @@ class E2E(unittest.TestCase):
                "  cheat\n"
                "QED\n")
         f = write("e2echeatScript.sml", src)
-        out = show("diagnostics cheat", M.diagnostics(f, timeout=180))
+        out = show("diagnostics cheat", M.diagnostics(f, wait=180))
         # The pool replays `cheat` successfully: its verdict compares
         # hypotheses, not oracle tags, so a cheated proof is reported as
         # `proved`.  Only assert it isn't a failure.
@@ -241,28 +242,57 @@ class E2E(unittest.TestCase):
         src = ("Theory e2eblk\nAncestors nosuchtheory\n\n"
                "Theorem x:\n  T\nProof\n  ACCEPT_TAC TRUTH\nQED\n")
         f = write("e2eblkScript.sml", src)
-        out = show("diagnostics blocked", M.diagnostics(f, timeout=180))
+        out = show("diagnostics blocked", M.diagnostics(f, wait=180))
         self.assertTrue(out.startswith("BLOCKED:"), out)
         self.assertIn("nosuchtheory", out)
         self.assertIn("compile is blocked", M.goal_state(f, 7, 3))
         self.assertIn("x (constant)", M.document_symbol(f))
         self.assertIn("retryCompile", M.retry_compile(f))
-        self.assertTrue(M.diagnostics(f, timeout=180).startswith("BLOCKED:"))
+        self.assertTrue(M.diagnostics(f, wait=180).startswith("BLOCKED:"))
 
     def test_deleted_theorem_leaves_tally(self):
         def thm(n):
             return f"Theorem {n}:\n  T\nProof\n  ACCEPT_TAC TRUTH\nQED\n\n"
         f = write("e2edelScript.sml", "Theory e2edel\n\n" + thm("one") + thm("two"))
-        self.assertIn("2/2 proofs proved", M.diagnostics(f, timeout=180))
+        self.assertIn("2/2 proofs proved", M.diagnostics(f, wait=180))
         write("e2edelScript.sml", "Theory e2edel\n\n" + thm("one"))
-        out = show("diagnostics after deleting a theorem", M.diagnostics(f, timeout=180))
+        out = show("diagnostics after deleting a theorem", M.diagnostics(f, wait=180))
         self.assertTrue(out.startswith("OK: compiled with no errors; 1/1 proofs proved"), out)
 
     def test_restart(self):
         f = write("e2erstScript.sml", "Theory e2erst\n\nval x = 1\n")
-        self.assertTrue(M.diagnostics(f, timeout=180).startswith("OK"))
+        self.assertTrue(M.diagnostics(f, wait=180).startswith("OK"))
         self.assertIn("Started a new server", M.restart(f))
-        self.assertTrue(M.diagnostics(f, timeout=180).startswith("OK"))
+        self.assertTrue(M.diagnostics(f, wait=180).startswith("OK"))
+
+    def test_looping_proof_then_edit_across_proofs(self):
+        def src(early, later):
+            return ("Theory e2eloop\n\n"
+                    f"Theorem early:\n  T\nProof\n  {early}\nQED\n\n"
+                    f"Theorem later:\n  T\nProof\n  {later}\nQED\n")
+        loop = ("(fn g => let fun loop () = (OS.Process.sleep "
+                "(Time.fromMilliseconds 50); loop ()) in loop () end)")
+        f = write("e2eloopScript.sml", src("ACCEPT_TAC TRUTH", loop))
+        out = show("diagnostics looping", M.diagnostics(f, wait=20))
+        self.assertTrue(out.startswith("INCOMPLETE after 20s: 1/2 proved, 1 still checking"), out)
+        self.assertRegex(out, r"later \(line 9\): checking for \d+s \(finished proofs here took")
+        # Other calls answer while diagnostics waits.
+        bg = {}
+        t = threading.Thread(target=lambda: bg.update(out=M.diagnostics(f, wait=10)))
+        t.start()
+        time.sleep(1)
+        t0 = time.monotonic()
+        self.assertIn("Theorem early", M.goal_state(f, 6, 3))
+        self.assertLess(time.monotonic() - t0, 5)
+        t.join(30)
+        self.assertTrue(bg["out"].startswith("INCOMPLETE"), bg["out"])
+        # One write that changes both proofs.  The server reuses the check
+        # still running on `later` unless the wrapper steps around it (see
+        # session.proof_edit_start), so this would stay `checking`.
+        write("e2eloopScript.sml", src("ACCEPT_TAC  TRUTH", "NO_TAC"))
+        out = show("diagnostics after edit across proofs", M.diagnostics(f, wait=120))
+        self.assertTrue(out.startswith("PROBLEMS:"), out)
+        self.assertIn("failed: later", out)
 
 
 if __name__ == "__main__":
