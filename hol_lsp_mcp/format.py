@@ -42,7 +42,7 @@ def strip_ansi(s: str) -> str:
     return ANSI.sub("", s)
 
 
-def _clip(s: str, n: int = MAX_MESSAGE) -> str:
+def clip(s: str, n: int = MAX_MESSAGE) -> str:
     s = s.rstrip()
     return s if len(s) <= n else s[:n] + f"... [{len(s) - n} more chars]"
 
@@ -122,7 +122,7 @@ def format_diagnostics(r: dict, pos: PosFn) -> str:
                 line = f"  {k}: {st.get('name')}{where}"
                 det = st.get("detail")
                 if det:
-                    det = _clip(str(det), 1500)
+                    det = clip(str(det).strip(), 1500)
                     line += ":\n" + _indent(det, "      ") if "\n" in det else f": {det}"
                 out.append(line)
 
@@ -160,7 +160,7 @@ def format_range(rng: dict, pos: PosFn, uri: str | None = None) -> str:
 def format_diagnostic(d: dict, pos: PosFn) -> str:
     sev = SEVERITY.get(d.get("severity", 1), "?")
     where = format_range(d.get("range") or {}, pos)
-    msg = _clip(str(d.get("message", "")))
+    msg = clip(str(d.get("message", "")))
     if "\n" in msg:
         return f"  {where} {sev}:\n" + _indent(msg, "      ")
     return f"  {where} {sev}: {msg}"
@@ -189,7 +189,7 @@ def format_goal_state(res: Any, blocked: dict | None = None) -> str:
         out.append(str(res["note"]))
     if res.get("error"):
         out.append("Error: " + str(res["error"]).rstrip())
-    pretty = strip_ansi(res.get("pretty") or "").rstrip()
+    pretty = strip_ansi(res.get("pretty") or "").rstrip().lstrip("\n")
     if pretty:
         out.append(pretty)
     elif not res.get("error"):
@@ -219,11 +219,11 @@ def format_eval(res: Any, pos_in_code: Callable[[dict], tuple[int, int]]) -> str
             s = pos_in_code(p.get("start") or {})
             e = pos_in_code(p.get("end") or p.get("start") or {})
             where = f"{s[0]}:{s[1]}" + (f"-{e[0]}:{e[1]}" if e != s else "")
-            msg = _clip(str(rep.get("msg", "")))
+            msg = clip(str(rep.get("msg", "")))
             label = "error" if hard else "warning"
             out.append(f"{label} at {where}:" + ("\n" + _indent(msg) if "\n" in msg else f" {msg}"))
         elif kind in ("compilerOut", "toplevelOut"):
-            body = _clip(str(rep.get("body", "")), 20000)
+            body = clip(str(rep.get("body", "")), 20000)
             if body:
                 out.append(body)
         elif kind == "interrupted":

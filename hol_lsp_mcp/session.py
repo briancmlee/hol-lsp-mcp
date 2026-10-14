@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import pathlib
+import re
 import threading
 import time
 from typing import Any
@@ -214,7 +215,7 @@ class FileSession:
             with c.cond:
                 d = c.state.diagnostics.get(self.key) or {}
                 result["items"] = list(d.get("items") or [])
-                result["proofs"] = dict(c.state.proofs.get(self.key) or {})
+                result["proofs"] = self._live_proofs(c.state.proofs.get(self.key) or {})
 
         if self.settled_version == self.version:
             snapshot()
@@ -263,6 +264,20 @@ class FileSession:
         self.settled_version = self.version
         return result
 
+    def _live_proofs(self, proofs: dict[str, dict]) -> dict[str, dict]:
+        """The accumulated proof states, minus `cheated` entries for names no
+        longer in the file.  The server announces a dropped proof as
+        `cheated` and never retracts it, so a deleted or renamed theorem
+        would otherwise stay in the tally for good."""
+        text = self.text or ""
+        out = {}
+        for name, st in proofs.items():
+            if st.get("status") == "cheated" and not re.search(
+                    r"(?<![\w'])" + re.escape(name) + r"(?![\w'])", text):
+                continue
+            out[name] = st
+        return out
+
     def goal_state(self, line: int, column: int) -> Any:
         c = self._c()
         params = self.text_doc_pos(line, column)
@@ -276,8 +291,15 @@ class FileSession:
             res = c.request("$/hol/goalState", params, timeout=self.config.request_timeout)
         return res
 
-    def eval(self, code: str, timeout: float) -> Any:
-        return self._c().request("$/eval", {"uri": self.uri, "code": code}, timeout=timeout)
+    def eval(self, code: str, timeout: float) -> tuple[Any, str]:
+        """The report list, plus whatever the server wrote to stderr meanwhile
+        (where `print` output goes; the reports only carry PolyML.print-style
+        toplevel output)."""
+        c = self._c()
+        mark = c.stderr_mark()
+        res = c.request("$/eval", {"uri": self.uri, "code": code}, timeout=timeout)
+        c.wait_until(lambda: False, 0.2)  # let the stderr reader catch up
+        return res, c.stderr_since(mark)
 
     def request_at(self, method: str, line: int, column: int, extra: dict | None = None) -> Any:
         params = self.text_doc_pos(line, column)
@@ -295,7 +317,8 @@ class FileSession:
                                  timeout=self.config.request_timeout)
 
     def retry_compile(self) -> None:
-        self.sync_seq = self._c().notify("$/hol/retryCompile", {"uri": self.uri})
+        self.sync_seq = self._c().notify("$/hol/retryCompile",
+                                       {"textDocument": {"uri": self.uri}})
         self.settled_version = None
 
     # ------------------------------------------------------- formatting

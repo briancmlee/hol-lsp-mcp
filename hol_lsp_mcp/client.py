@@ -101,6 +101,7 @@ class LspClient:
         self._next_id = 1
         self._write_lock = threading.Lock()
         self._stderr = bytearray()
+        self._stderr_total = 0  # bytes ever received, for `stderr_since`
         self._stderr_lock = threading.Lock()
         self.protocol_errors = 0
         self.initialize_result: dict | None = None
@@ -118,6 +119,17 @@ class LspClient:
         with self._stderr_lock:
             return bytes(self._stderr[-nbytes:]).decode("utf-8", "replace")
 
+    def stderr_mark(self) -> int:
+        with self._stderr_lock:
+            return self._stderr_total
+
+    def stderr_since(self, mark: int) -> str:
+        """What the server wrote to stderr since `stderr_mark()` returned
+        `mark` (as far as the retained tail reaches)."""
+        with self._stderr_lock:
+            n = min(self._stderr_total - mark, len(self._stderr))
+            return bytes(self._stderr[len(self._stderr) - n:]).decode("utf-8", "replace") if n > 0 else ""
+
     # ----------------------------------------------------------- reading
 
     def _read_stderr(self) -> None:
@@ -132,6 +144,7 @@ class LspClient:
                 break
             with self._stderr_lock:
                 self._stderr.extend(chunk)
+                self._stderr_total += len(chunk)
                 if len(self._stderr) > 2 * STDERR_TAIL_BYTES:
                     del self._stderr[:-STDERR_TAIL_BYTES]
 

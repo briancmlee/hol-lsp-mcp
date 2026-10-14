@@ -60,7 +60,9 @@ async def goalState(file: str, line: int, column: int) -> str:
 
 @mcp.tool(structured_output=False)
 async def eval(file: str, code: str, timeout: float = 120) -> str:
-    """$/eval: run SML/HOL code in the file's server (shared process state)."""
+    """$/eval: compile and run SML in the file's server process.  Bindings are
+    not echoed: use print or PolyML.print.  Sees loaded theories/libraries,
+    not the file's own declarations; changes persist in the process."""
     return await _call(_mgr().eval, file, code, timeout)
 
 
@@ -78,7 +80,7 @@ async def definition(file: str, line: int, column: int) -> str:
 
 @mcp.tool(structured_output=False)
 async def references(file: str, line: int, column: int) -> str:
-    """textDocument/references (current HOL servers do not implement it)."""
+    """textDocument/references (says so if the server does not support it; current HOL does not)."""
     return await _call(_mgr().references, file, line, column)
 
 

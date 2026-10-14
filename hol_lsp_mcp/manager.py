@@ -137,8 +137,12 @@ class Manager:
 
     def eval(self, file: str, code: str, timeout: float = 120) -> str:
         def op(s: FileSession) -> str:
-            res = s.eval(code, timeout)
-            return fmt.format_eval(res, lambda p: from_lsp(code, p, s.encoding))
+            res, stderr = s.eval(code, timeout)
+            out = fmt.format_eval(res, lambda p: from_lsp(code, p, s.encoding))
+            if stderr.strip():
+                out += ("\nServer stderr while it ran (print output; may include unrelated lines):\n"
+                        + fmt.clip(stderr.rstrip(), 20000))
+            return out
         return self._run(file, op)
 
     def hover(self, file: str, line: int, column: int) -> str:
@@ -150,10 +154,16 @@ class Manager:
             s.request_at("textDocument/definition", line, column), s.loc_str, "definition"))
 
     def references(self, file: str, line: int, column: int) -> str:
-        return self._run(file, lambda s: fmt.format_locations(
-            s.request_at("textDocument/references", line, column,
-                         {"context": {"includeDeclaration": True}}),
-            s.loc_str, "references"))
+        def op(s: FileSession) -> str:
+            caps = (s.client.initialize_result or {}).get("capabilities") or {}
+            if not caps.get("referencesProvider"):
+                return ("Not supported by this server: it does not advertise "
+                        "referencesProvider (HOL has no index of theorem uses).")
+            return fmt.format_locations(
+                s.request_at("textDocument/references", line, column,
+                             {"context": {"includeDeclaration": True}}),
+                s.loc_str, "references")
+        return self._run(file, op)
 
     def document_symbol(self, file: str) -> str:
         return self._run(file, lambda s: fmt.format_document_symbols(

@@ -122,7 +122,8 @@ def main():
             offered = ((params.get("capabilities") or {}).get("general") or {}).get("positionEncodings") or []
             ENC = "utf-8" if "utf-8" in offered and not os.environ.get("FAKE_UTF16") else "utf-16"
             send({"jsonrpc": "2.0", "id": mid, "result": {"capabilities": {
-                "positionEncoding": ENC, "textDocumentSync": 1, "hoverProvider": True}}})
+                "positionEncoding": ENC, "textDocumentSync": 1, "hoverProvider": True,
+                "referencesProvider": True}}})
             notify("window/logMessage", {"type": 3, "message": "started"})
         elif method == "initialized":
             notify("window/showMessage", {"type": 2, "message": "fake heap warning"})
@@ -138,7 +139,7 @@ def main():
             threading.Thread(target=compile_, args=(uri, text, td["version"], gen), daemon=True).start()
         elif method == "$/hol/retryCompile":
             gen += 1
-            uri = params["uri"]
+            uri = params["textDocument"]["uri"]
             threading.Thread(target=compile_, args=(uri, texts[uri].replace("Ancestors missing", ""), versions[uri], gen),
                              daemon=True).start()
         elif method == "textDocument/hover":
