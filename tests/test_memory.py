@@ -4,7 +4,7 @@ import os
 import unittest
 
 from hol_lsp_mcp import format as fmt
-from hol_lsp_mcp.memory import default_max_heap_mb, default_soft_mb, footprint_mb
+from hol_lsp_mcp.memory import footprint_mb
 
 
 class MemoryTest(unittest.TestCase):
@@ -15,13 +15,6 @@ class MemoryTest(unittest.TestCase):
 
     def test_footprint_of_missing_process(self):
         self.assertIsNone(footprint_mb(2 ** 22 + 12345))
-
-    def test_defaults_scale_with_ram(self):
-        gb = 1024
-        self.assertEqual([default_max_heap_mb(n * gb) for n in (8, 16, 32, 64, 128)],
-                         [4000, 6000, 12500, 16000, 16000])
-        self.assertEqual([default_soft_mb(n * gb) for n in (8, 16, 32, 64)],
-                         [2000, 2000, 2000, 4000])
 
 
 def pos(_uri, p):

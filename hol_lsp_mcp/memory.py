@@ -5,7 +5,7 @@ MEM report), not RSS: a Poly/ML heap that has been pushed out to the
 compressor or to swap still counts.  A `hol lsp` has been seen at 1 GB RSS
 and 13 GB footprint.
 
-Two limits, scaled to the machine:
+Two limits:
   hard: Poly/ML's --maxheap for each server.  Poly's own default is 80%
         of RAM, so one looping proof can take the whole machine.  At the
         cap Poly interrupts every thread: the proof fails with Interrupt,
@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import ctypes
 import ctypes.util
-import os
 import struct
 import sys
 
@@ -48,27 +47,17 @@ def footprint_mb(pid: int) -> int | None:
         return None
 
 
-def ram_mb() -> int | None:
-    try:
-        return os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES") // (1 << 20)
-    except (OSError, ValueError, AttributeError):
-        return None
+# A normal server stays under about 2 GB, whatever the machine, so the
+# defaults are fixed rather than scaled with RAM.  A file that genuinely
+# needs more (CakeML translator scripts, say) gets it from
+# `restart(file, max_heap_mb=...)`.
+DEFAULT_MAX_HEAP_MB = 3000
+DEFAULT_SOFT_MB = 2000
 
 
-def default_max_heap_mb(ram: int | None = None) -> int:
-    """3/8 of RAM, rounded to 500 MB, kept within 4000..16000 MB:
-    6000 on a 16 GB machine, 12500 on 32 GB, 16000 on 64 GB."""
-    ram = ram_mb() if ram is None else ram
-    if not ram:
-        return 6000
-    return max(4000, min(16000, round(ram * 3 / 8 / 500) * 500))
+def default_max_heap_mb() -> int:
+    return DEFAULT_MAX_HEAP_MB
 
 
-def default_soft_mb(ram: int | None = None) -> int:
-    """1/16 of RAM, rounded to 500 MB, at least 2000 MB: 2000 on 16 or
-    32 GB, 4000 on 64 GB.  A normal server stays well under 2 GB, so this
-    is about the workload more than the machine."""
-    ram = ram_mb() if ram is None else ram
-    if not ram:
-        return 2000
-    return max(2000, round(ram / 16 / 500) * 500)
+def default_soft_mb() -> int:
+    return DEFAULT_SOFT_MB

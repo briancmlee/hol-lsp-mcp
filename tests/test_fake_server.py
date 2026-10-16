@@ -234,8 +234,7 @@ class FakeServerTest(unittest.TestCase):
         saved = {k: os.environ.pop(k, None) for k in keys}
         try:
             c = Config.from_env()
-            self.assertGreaterEqual(c.max_heap_mb, 4000)
-            self.assertGreaterEqual(c.soft_mb, 2000)
+            self.assertEqual((c.max_heap_mb, c.soft_mb), (3000, 2000))
             os.environ.update({keys[0]: "0", keys[1]: "3000", keys[2]: "60"})
             c = Config.from_env()
             self.assertEqual((c.max_heap_mb, c.soft_mb, c.soft_secs), (0, 3000, 60))
