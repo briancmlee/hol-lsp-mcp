@@ -257,5 +257,79 @@ class FakeServerTest(unittest.TestCase):
                 os.environ[key] = saved
 
 
+    def idle_manager(self, **kw):
+        self.m.shutdown()
+        self.m = Manager(Config(hol_bin=self.bin, extra_path=None, max_servers=2,
+                                init_timeout=20, request_timeout=20, quiet_period=0.3,
+                                idle_check_secs=0.1, **kw))
+
+    def test_idle_server_is_stopped_and_restarted(self):
+        self.idle_manager(idle_secs=0.5)
+        f = self.write("iScript.sml", "Theory i\nTheorem a:\n T\nProof\n rw[]\nQED\n")
+        self.assertIn("OK: compiled", self.m.diagnostics(f, wait=20))
+        deadline = time.monotonic() + 10
+        while self.m.running_files() and time.monotonic() < deadline:
+            time.sleep(0.1)
+        self.assertEqual(self.m.running_files(), [])
+        out = self.m.diagnostics(f, wait=20)
+        self.assertIn("OK: compiled", out)
+        self.assertRegex(out, r"Note: the server for .*iScript.sml was stopped after \d+s idle; "
+                              r"restarted it\.")
+        self.assertEqual(self.m.running_files(), [f])
+        self.assertNotIn("was stopped after", self.m.diagnostics(f, wait=20))  # reported once
+
+    def test_checking_proof_keeps_server(self):
+        self.idle_manager(idle_secs=3600, soft_secs=3600)
+        f = self.write("jScript.sml", "Theory j\nTheorem b:\n T\nProof\n LOOP\nQED\n")
+        self.assertTrue(self.m.diagnostics(f, wait=1).startswith("INCOMPLETE"))
+        later = time.monotonic() + 7200
+        self.assertEqual(self.m.reap_idle(now=later), [])  # checking, not looping: kept
+        self.assertEqual(self.m.running_files(), [f])
+
+    def test_looping_idle_server_is_stopped(self):
+        self.idle_manager(idle_secs=3600, soft_secs=1)
+        f = self.write("kScript.sml", "Theory k\nTheorem b:\n T\nProof\n LOOP\nQED\n")
+        out = self.m.diagnostics(f, wait=2)
+        self.assertIn("PROBABLY LOOPING: proof b", out)
+        self.assertEqual(self.m.reap_idle(), [])  # looping, but not idle yet
+        self.assertEqual(self.m.reap_idle(now=time.monotonic() + 7200), [f])
+        self.assertEqual(self.m.running_files(), [])
+
+    def test_waiting_call_keeps_server(self):
+        self.idle_manager(idle_secs=3600, soft_secs=3600)
+        f = self.write("wScript.sml", "Theory w\nTheorem b:\n T\nProof\n LOOP\nQED\n")
+        self.m.diagnostics(f, wait=0.5)
+        t = threading.Thread(target=self.m.diagnostics, args=(f,), kwargs={"wait": 2})
+        t.start()
+        time.sleep(0.5)
+        with self.m._lock:
+            s = self.m._sessions[f]
+        self.assertGreater(s.waiters, 0)
+        self.m.config.soft_secs = 0.1  # now looping: only the waiting call protects it
+        self.assertEqual(self.m.reap_idle(now=time.monotonic() + 7200), [])
+        t.join()
+        self.assertEqual(self.m.running_files(), [f])
+
+    def test_idle_disabled(self):
+        self.idle_manager(idle_secs=0)
+        f = self.write("dScript.sml", "Theory d\n")
+        self.m.diagnostics(f, wait=20)
+        self.assertEqual(self.m.reap_idle(now=time.monotonic() + 10 ** 6), [f])  # manual reap
+        self.assertIsNone(self.m.reaper)  # ... but no reaper thread runs when disabled
+
+    def test_idle_secs_from_env(self):
+        key = "HOL_LSP_IDLE_SECS"
+        saved = os.environ.pop(key, None)
+        try:
+            self.assertEqual(Config.from_env().idle_secs, 900)
+            os.environ[key] = "60"
+            self.assertEqual(Config.from_env().idle_secs, 60)
+            os.environ[key] = "0"
+            self.assertEqual(Config.from_env().idle_secs, 0)
+        finally:
+            os.environ.pop(key, None)
+            if saved is not None:
+                os.environ[key] = saved
+
 if __name__ == "__main__":
     unittest.main()

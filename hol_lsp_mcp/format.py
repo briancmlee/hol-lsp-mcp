@@ -78,6 +78,13 @@ def _gb(mb: float) -> str:
     return f"{mb / 1024:.1f} GB"
 
 
+def is_looping(t: float, base: float | None, soft_secs: float | None, factor: float) -> bool:
+    """A proof checking for `t` seconds is probably looping: past the soft
+    limit, or (after a minute) `factor` times the slowest finished proof."""
+    return bool((soft_secs and t > soft_secs) or
+                (base is not None and t >= 60 and t > factor * max(base, 1)))
+
+
 def looping_notices(r: dict, by: dict[str, list[dict]], pos: PosFn) -> list[str]:
     """Soft limits: name proofs that have checked for too long, and a
     server whose footprint is over the soft limit.  Only a report: what to
@@ -91,8 +98,7 @@ def looping_notices(r: dict, by: dict[str, list[dict]], pos: PosFn) -> list[str]
     slow = []
     for st in by.get("checking", []):
         t = checking.get(st.get("name"))
-        if t is not None and ((soft_secs and t > soft_secs) or
-                              (base is not None and t >= 60 and t > factor * max(base, 1))):
+        if t is not None and is_looping(t, base, soft_secs, factor):
             slow.append((st, t))
     big = fp is not None and soft_mb and fp > soft_mb
     if not slow and not big:

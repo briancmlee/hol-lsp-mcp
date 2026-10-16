@@ -29,7 +29,9 @@ limit) with PROBABLY LOOPING, and stops nothing.  Look at goalState before
 the suspect tactic, or cheat it and move on, or restart.  Each server's
 heap is capped, so a runaway proof fails with Interrupt (or its server
 exits and is restarted on the next call) instead of taking the machine's
-memory.
+memory.  A server idle for HOL_LSP_IDLE_SECS (default 15 min) is stopped
+to free its memory; the next call on that file starts a fresh one and says
+so.
 Other tools answer while diagnostics waits."""
 
 manager: Manager | None = None
