@@ -67,7 +67,7 @@ class Manager:
         return s
 
     def _run(self, file: str, op: Callable[[FileSession], str], *, sync: bool = True,
-             restart: bool = False) -> str:
+             restart: bool = False, max_heap_mb: int | None = None) -> str:
         path = os.path.abspath(os.path.expanduser(file))
         while True:
             s = self._session(path)
@@ -77,6 +77,8 @@ class Manager:
                         continue  # evicted between lookup and lock; try again
                 notes: list[str] = []
                 try:
+                    if max_heap_mb is not None:
+                        s.max_heap_mb = max(0, max_heap_mb)
                     if restart and s.client is not None:
                         s.stop()
                         notes.append(f"Stopped the server for {path}.")
@@ -195,10 +197,12 @@ class Manager:
                     "Call diagnostics to see the result.")
         return self._run(file, op)
 
-    def restart(self, file: str) -> str:
+    def restart(self, file: str, max_heap_mb: int | None = None) -> str:
         def op(s: FileSession) -> str:
-            return f"Server running (pid {s.client.proc.pid}); file opened at version {s.version}."
-        return self._run(file, op, restart=True)
+            cap = f"heap capped at {s.heap_cap} MB" if s.heap_cap else "no heap cap"
+            return (f"Server running (pid {s.client.proc.pid}, {cap}); "
+                    f"file opened at version {s.version}.")
+        return self._run(file, op, restart=True, max_heap_mb=max_heap_mb)
 
     def wait_compiled(self, file: str, timeout: float = 600) -> str:
         """CLI helper: wait until the current text has compiled."""

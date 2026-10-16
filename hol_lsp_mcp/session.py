@@ -19,6 +19,7 @@ from . import format as fmt
 from .cheats import find_cheats, mask
 from .client import LspClient, LspError, RequestTimeout, ServerDied, make_env, uri_key
 from .config import Config
+from .memory import footprint_mb
 from .positions import UTF16, from_lsp, to_lsp
 
 LANGUAGE_ID = "holsml"
@@ -100,6 +101,10 @@ class FileSession:
         self.encoding = UTF16
         self.last_used = time.monotonic()
         self.waiters = 0  # calls waiting without `lock`; guarded by `lock`
+        # --maxheap (MB) for this file's server, set by `restart`; None
+        # means the config's.  `heap_cap` is what the running server got.
+        self.max_heap_mb: int | None = None
+        self.heap_cap = 0
         self._reset_doc()
 
     def _reset_doc(self) -> None:
@@ -118,7 +123,10 @@ class FileSession:
         return self.client is not None and self.client.alive()
 
     def start(self) -> None:
-        argv = [self.config.hol_bin, "lsp", "--lsp-check-proofs"]
+        cap = self.config.max_heap_mb if self.max_heap_mb is None else self.max_heap_mb
+        # Poly/ML runtime options go before the subcommand.
+        argv = ([self.config.hol_bin] + (["--maxheap", str(cap)] if cap > 0 else [])
+                + ["lsp", "--lsp-check-proofs"])
         if not os.path.exists(self.config.hol_bin):
             raise RuntimeError(f"HOL binary not found: {self.config.hol_bin} "
                                "(set HOL_BIN or HOLDIR)")
@@ -142,6 +150,7 @@ class FileSession:
             raise RuntimeError(f"hol lsp failed to start for {self.path}: {e}\n"
                                f"stderr tail:\n{tail}") from e
         client.initialize_result = res
+        self.heap_cap = cap
         self.encoding = ((res or {}).get("capabilities") or {}).get("positionEncoding") or UTF16
         self.client = client
 
@@ -331,6 +340,10 @@ class FileSession:
                     result["baseline"] = max(secs) if secs else None
                 result["cheats"] = find_cheats(self.text or "")
                 result["waited"] = now - start
+                result["footprint_mb"] = footprint_mb(c.proc.pid)
+                result["limits"] = {"heap_mb": self.heap_cap, "soft_mb": self.config.soft_mb,
+                                    "soft_secs": self.config.soft_secs,
+                                    "soft_factor": self.config.soft_factor}
                 return result
 
             if self.settled_version == version:

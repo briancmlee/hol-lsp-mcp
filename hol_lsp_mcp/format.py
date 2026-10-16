@@ -74,6 +74,47 @@ def proof_tally(proofs: dict[str, dict]) -> dict[str, list[dict]]:
     return by
 
 
+def _gb(mb: float) -> str:
+    return f"{mb / 1024:.1f} GB"
+
+
+def looping_notices(r: dict, by: dict[str, list[dict]], pos: PosFn) -> list[str]:
+    """Soft limits: name proofs that have checked for too long, and a
+    server whose footprint is over the soft limit.  Only a report: what to
+    do is the caller's decision."""
+    lim = r.get("limits") or {}
+    fp = r.get("footprint_mb")
+    soft_mb, soft_secs = lim.get("soft_mb"), lim.get("soft_secs")
+    factor, heap = lim.get("soft_factor", 10), lim.get("heap_mb") or 0
+    base = r.get("baseline")
+    checking = r.get("checking") or {}
+    slow = []
+    for st in by.get("checking", []):
+        t = checking.get(st.get("name"))
+        if t is not None and ((soft_secs and t > soft_secs) or
+                              (base is not None and t >= 60 and t > factor * max(base, 1))):
+            slow.append((st, t))
+    big = fp is not None and soft_mb and fp > soft_mb
+    if not slow and not big:
+        return []
+    size = f"server footprint {_gb(fp)}" if fp is not None else ""
+    out = []
+    for st, t in sorted(slow, key=lambda x: -x[1]):
+        where = f" (line {pos(None, st['pos'])[0]})" if st.get("pos") else ""
+        took = f", finished proofs here took ≤{duration(max(base, 1))}" if base is not None else ""
+        out.append(f"PROBABLY LOOPING: proof {st.get('name')}{where} has been checking for "
+                   f"{duration(t)}{took}" + (f"; {size}" if size else "") + ". Cancel it or restart?")
+    if big and not slow:
+        out.append(f"SERVER LARGE: {size}, over the soft limit of {_gb(soft_mb)}: a proof may be "
+                   "looping, or the heap kept its size after one. Restart?")
+    out.append("  Nothing has been stopped. To cancel a proof, edit it (or cheat it for now); "
+               "`restart` starts a fresh server. "
+               + (f"Hard limit: this server's heap is capped at {heap} MB; at the cap the "
+                  "proof fails with Interrupt, or the server exits and is restarted on the "
+                  "next call." if heap else "This server has no heap cap."))
+    return out
+
+
 def format_diagnostics(r: dict, pos: PosFn) -> str:
     """`r` is what `FileSession.diagnostics` returns."""
     items = r["items"]
@@ -135,7 +176,7 @@ def format_diagnostics(r: dict, pos: PosFn) -> str:
                 verdict = f"CHEATS: {what}; " + verdict.split(": ", 1)[1]
             else:
                 verdict += f"; {what}"
-    out = [verdict]
+    out = [verdict] + looping_notices(r, by, pos)
     if status == "incomplete":
         out.append("The server keeps checking; call diagnostics again to keep waiting.")
     if r.get("cheats"):
@@ -163,6 +204,9 @@ def format_diagnostics(r: dict, pos: PosFn) -> str:
                     continue
                 line = f"  {k}: {st.get('name')}{where}"
                 det = st.get("detail")
+                heap = (r.get("limits") or {}).get("heap_mb")
+                if k == "failed" and det and heap and "Interrupt" in str(det):
+                    line += f" [Interrupt: perhaps the {heap} MB heap cap]"
                 if det:
                     det = clip(str(det).strip(), 1500)
                     line += ":\n" + _indent(det, "      ") if "\n" in det else f": {det}"

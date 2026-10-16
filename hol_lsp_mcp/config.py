@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+
+from .memory import default_max_heap_mb, default_soft_mb
 
 
 def _default_hol_bin() -> str:
@@ -18,6 +20,13 @@ def _default_hol_bin() -> str:
 DEFAULT_GOALSTATE_BUDGET_MS = "10000"
 
 
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name) or default)
+    except ValueError:
+        return default
+
+
 @dataclass
 class Config:
     hol_bin: str
@@ -29,6 +38,15 @@ class Config:
     # HOL_LSP_GOALSTATE_BUDGET_MS for the servers: the goalState walker's
     # time budget in ms.  None leaves the server's environment alone.
     goalstate_budget_ms: str | None = DEFAULT_GOALSTATE_BUDGET_MS
+    # Hard limit: Poly/ML --maxheap (MB) for each server; 0 for none.
+    max_heap_mb: int = field(default_factory=default_max_heap_mb)
+    # Soft limits (report only): server footprint (MB), and how long one
+    # proof may check before diagnostics calls it probably looping; also
+    # flagged when it has run `soft_factor` times as long as the slowest
+    # finished proof in the file (and at least a minute).
+    soft_mb: int = field(default_factory=default_soft_mb)
+    soft_secs: float = 180.0
+    soft_factor: float = 10.0
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -45,4 +63,7 @@ class Config:
             max_servers=max_servers,
             goalstate_budget_ms=(os.environ.get("HOL_LSP_GOALSTATE_BUDGET_MS")
                                  or DEFAULT_GOALSTATE_BUDGET_MS),
+            max_heap_mb=max(0, _env_int("HOL_LSP_MCP_MAX_HEAP_MB", default_max_heap_mb())),
+            soft_mb=max(1, _env_int("HOL_LSP_MCP_SOFT_MB", default_soft_mb())),
+            soft_secs=max(1, _env_int("HOL_LSP_MCP_SOFT_SECS", 180)),
         )

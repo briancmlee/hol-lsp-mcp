@@ -24,7 +24,12 @@ the file from disk first, and an edit cancels the checks of the old text.
 Checks carry on in the server, so calling it again continues the wait.  If
 it says INCOMPLETE, it lists each proof still checking and for how long.  A
 proof that has run far longer than its neighbours is probably looping:
-look at goalState before the suspect tactic, or cheat it and move on.
+diagnostics flags it (and a server whose memory has grown past a soft
+limit) with PROBABLY LOOPING, and stops nothing.  Look at goalState before
+the suspect tactic, or cheat it and move on, or restart.  Each server's
+heap is capped, so a runaway proof fails with Interrupt (or its server
+exits and is restarted on the next call) instead of taking the machine's
+memory.
 Other tools answer while diagnostics waits."""
 
 manager: Manager | None = None
@@ -118,9 +123,12 @@ async def retryCompile(file: str) -> str:
 
 
 @mcp.tool(structured_output=False)
-async def restart(file: str) -> str:
-    """Restart this file's server (e.g. after its dependencies were rebuilt)."""
-    return await _call(_mgr().restart, file)
+async def restart(file: str, max_heap_mb: int | None = None) -> str:
+    """Restart this file's server (e.g. after its dependencies were rebuilt,
+    or when diagnostics reports a probably looping proof).  `max_heap_mb`
+    sets this file's heap cap from now on (0 for none); by default the
+    server's configured cap applies."""
+    return await _call(_mgr().restart, file, max_heap_mb)
 
 
 def main() -> None:

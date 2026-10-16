@@ -33,6 +33,21 @@ only adds what an agent can't easily do itself:
   proof stands out. If the file hasn't changed since a settled answer, it
   returns immediately. Other calls on the same file do not queue behind a
   waiting `diagnostics`.
+- **Memory and looping proofs: two limits.** Poly/ML lets a process grow to
+  80% of RAM by default, so one looping proof can take the whole machine
+  (a server has been seen at 13 GB). The *hard* limit is Poly/ML's
+  `--maxheap`, given to every server: at the cap Poly/ML interrupts the
+  server's threads, so the proof fails with `Interrupt`, or, if Poly
+  cannot recover (`Run out of store ... Failed to recover - exiting`, as
+  seen with a looping rewrite under a 1500 MB cap), the server exits and
+  the next call restarts it. Either way the machine keeps its memory. The *soft* limits only report:
+  `diagnostics` says `PROBABLY LOOPING: proof X (line N) has been checking
+  for M, ...; server footprint G GB. Cancel it or restart?` when a proof
+  has been checking for over 3 minutes, or for ten times as long as the
+  slowest finished proof (and at least a minute), and `SERVER LARGE` when
+  the server's footprint is over the soft limit. Nothing is ever stopped:
+  edit or cheat the proof to cancel it, or call `restart`. The footprint is
+  the physical footprint (compressed and swapped pages included), not RSS.
 - **Positions.** All lines and columns are 1-based, and columns count Unicode
   characters, which is how an agent sees a file full of `∀`, `⇒` and `‘’`. The
   wrapper negotiates `utf-8` with the server and converts in both directions.
@@ -60,7 +75,7 @@ only adds what an agent can't easily do itself:
 | `workspaceSymbol(file, query)` | `workspace/symbol` (in that file's server) | name, kind, theory, location |
 | `completion(file, line, column)` | `textDocument/completion` | labels with details, first 50 |
 | `retryCompile(file)` | `$/hol/retryCompile` | sends the notification; call `diagnostics` next |
-| `restart(file)` | (wrapper) | kills and restarts that file's server, e.g. after its dependencies were rebuilt |
+| `restart(file, max_heap_mb=None)` | (wrapper) | kills and restarts that file's server, e.g. after its dependencies were rebuilt; `max_heap_mb` sets that file's heap cap from then on (`0` for none) |
 
 An unfinished answer looks like this:
 
@@ -90,6 +105,9 @@ Environment variables:
 | `HOL_BIN` | `$HOLDIR/bin/hol`, else `~/HOL/bin/hol` | the `hol` executable |
 | `HOL_LSP_EXTRA_PATH` | unset | prepended to `PATH` for the server processes (e.g. `~/.local/polyml/bin`) |
 | `HOL_LSP_MCP_MAX_SERVERS` | `3` | how many servers may run at once. Each one holds a HOL heap. |
+| `HOL_LSP_MCP_MAX_HEAP_MB` | 3/8 of RAM, rounded to 500, within 4000–16000 (6000 on 16 GB, 16000 on 64 GB) | hard limit: Poly/ML `--maxheap` for each server; `0` for none |
+| `HOL_LSP_MCP_SOFT_MB` | RAM/16, at least 2000 (2000 on 16 GB, 4000 on 64 GB) | soft limit: server footprint above which `diagnostics` reports `SERVER LARGE` |
+| `HOL_LSP_MCP_SOFT_SECS` | `180` | soft limit: how long a proof may check before `diagnostics` reports it as probably looping |
 | `HOL_LSP_GOALSTATE_BUDGET_MS` | `10000` | passed to the servers: how long (ms) HOL may spend walking a tactic for `goalState`. HOL's own default, 1500, is too short for slow tactics such as CF's `xmatch`; HOL ignores the variable before its `lsp-walker-budget` patch (see `docs/upstream-issues.md`). |
 
 Register it with Claude Code at local scope (the default scope):

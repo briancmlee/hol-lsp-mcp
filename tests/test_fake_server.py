@@ -202,6 +202,49 @@ class FakeServerTest(unittest.TestCase):
                                 goalstate_budget_ms="2500"))
         self.assertIn("budget 2500", self.m.goal_state(f, 1, 1))
 
+    def test_heap_cap_reaches_server(self):
+        # The fake's goalState note echoes its arguments.
+        f = self.write("hScript.sml", "Theory h\n")
+        cap = self.m.config.max_heap_mb
+        self.assertGreater(cap, 0)
+        self.assertIn(f"args --maxheap {cap} lsp --lsp-check-proofs", self.m.goal_state(f, 1, 1))
+        self.assertIn("heap capped at 1234 MB", self.m.restart(f, max_heap_mb=1234))
+        self.assertIn("args --maxheap 1234 lsp", self.m.goal_state(f, 1, 1))
+        self.assertIn("1234 MB", self.m.restart(f))  # the override sticks
+        self.assertIn("no heap cap", self.m.restart(f, max_heap_mb=0))
+        self.assertIn("args lsp --lsp-check-proofs", self.m.goal_state(f, 1, 1))
+
+    def test_looping_proof_is_reported_not_stopped(self):
+        self.m.shutdown()
+        self.m = Manager(Config(hol_bin=self.bin, extra_path=None, max_servers=1,
+                                init_timeout=20, request_timeout=20, quiet_period=0.3,
+                                soft_secs=1))
+        f = self.write("lScript.sml", "Theory l\nTheorem a:\n T\nProof\n rw[]\nQED\n"
+                                      "Theorem b:\n T\nProof\n LOOP\nQED\n")
+        out = self.m.diagnostics(f, wait=3)
+        self.assertTrue(out.startswith("INCOMPLETE"), out)
+        self.assertIn("PROBABLY LOOPING: proof b (line 7) has been checking for", out)
+        self.assertIn("Nothing has been stopped", out)
+        self.assertNotIn("PROBABLY LOOPING: proof a", out)
+        out = self.m.diagnostics(f, wait=1)
+        self.assertIn("PROBABLY LOOPING: proof b", out)  # still running, still reported
+
+    def test_heap_limits_from_env(self):
+        keys = ("HOL_LSP_MCP_MAX_HEAP_MB", "HOL_LSP_MCP_SOFT_MB", "HOL_LSP_MCP_SOFT_SECS")
+        saved = {k: os.environ.pop(k, None) for k in keys}
+        try:
+            c = Config.from_env()
+            self.assertGreaterEqual(c.max_heap_mb, 4000)
+            self.assertGreaterEqual(c.soft_mb, 2000)
+            os.environ.update({keys[0]: "0", keys[1]: "3000", keys[2]: "60"})
+            c = Config.from_env()
+            self.assertEqual((c.max_heap_mb, c.soft_mb, c.soft_secs), (0, 3000, 60))
+        finally:
+            for k, v in saved.items():
+                os.environ.pop(k, None)
+                if v is not None:
+                    os.environ[k] = v
+
     def test_goalstate_budget_from_env(self):
         key = "HOL_LSP_GOALSTATE_BUDGET_MS"
         saved = os.environ.pop(key, None)
