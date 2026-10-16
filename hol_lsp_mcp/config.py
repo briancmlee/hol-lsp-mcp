@@ -47,6 +47,12 @@ class Config:
     soft_mb: int = field(default_factory=default_soft_mb)
     soft_secs: float = 180.0
     soft_factor: float = 10.0
+    # Idle shutdown: a server with no tool calls for `idle_secs` (0 = never)
+    # is stopped, unless a call is waiting on it or a proof is still
+    # checking (a probably-looping proof does not count).  The pool looks
+    # every `idle_check_secs`.
+    idle_secs: float = 900.0
+    idle_check_secs: float = 30.0
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -66,4 +72,5 @@ class Config:
             max_heap_mb=max(0, _env_int("HOL_LSP_MCP_MAX_HEAP_MB", default_max_heap_mb())),
             soft_mb=max(1, _env_int("HOL_LSP_MCP_SOFT_MB", default_soft_mb())),
             soft_secs=max(1, _env_int("HOL_LSP_MCP_SOFT_SECS", 180)),
+            idle_secs=max(0, _env_int("HOL_LSP_IDLE_SECS", 900)),
         )

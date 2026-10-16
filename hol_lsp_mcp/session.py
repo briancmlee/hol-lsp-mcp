@@ -105,6 +105,9 @@ class FileSession:
         # means the config's.  `heap_cap` is what the running server got.
         self.max_heap_mb: int | None = None
         self.heap_cap = 0
+        # Set when the pool stopped this server for being idle; reported
+        # (and cleared) by the next call on the file.
+        self.idle_stopped: str | None = None
         self._reset_doc()
 
     def _reset_doc(self) -> None:
@@ -159,6 +162,30 @@ class FileSession:
         if c is not None:
             c.close()
         self._reset_doc()
+
+    def busy(self) -> str | None:
+        """Why this server must not be stopped for being idle, or None: the
+        current text is still compiling, or a proof is still checking and
+        is not probably looping."""
+        c = self.client
+        if c is None or not c.alive():
+            return None
+        now = time.monotonic()
+        with c.cond:
+            st = c.state
+            if st.progress_active:
+                return "compiling"
+            proofs = st.proofs.get(self.key) or {}
+            since = st.checking_since.get(self.key) or {}
+            secs = (st.check_secs.get(self.key) or {}).values()
+            base = max(secs) if secs else None
+            for name, p in proofs.items():
+                if p.get("status") != "checking":
+                    continue
+                t = now - max(since.get(name, now), self.changed_at)
+                if not fmt.is_looping(t, base, self.config.soft_secs, self.config.soft_factor):
+                    return f"proof {name} still checking"
+        return None
 
     def _c(self) -> LspClient:
         if self.client is None:

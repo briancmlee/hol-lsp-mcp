@@ -1,7 +1,9 @@
 """Server pool plus the operations the MCP tools and the CLI share.
 
 One `FileSession` per file, at most `max_servers` running; the least
-recently used idle one is shut down to make room.  Each operation takes
+recently used idle one is shut down to make room.  A server with no tool
+calls for `idle_secs` is stopped too (its next call starts a fresh one),
+unless a call is waiting on it or a proof is still checking.  Each operation takes
 the session's lock (so calls on one file serialise), restarts a dead
 server, re-syncs the file from disk, and returns text.  `diagnostics`
 lets go of the lock while it waits for the server, so other calls on the
@@ -32,6 +34,47 @@ class Manager:
         self._lock = threading.Lock()
         self._sessions: "OrderedDict[str, FileSession]" = OrderedDict()
         self._closed = False
+        self._stop_reaper = threading.Event()
+        self.reaper: threading.Thread | None = None
+        if self.config.idle_secs > 0:
+            self.reaper = threading.Thread(target=self._reaper, name="hol-lsp-idle", daemon=True)
+            self.reaper.start()
+
+    # ------------------------------------------------------- idle shutdown
+
+    def _reaper(self) -> None:
+        interval = max(0.05, min(self.config.idle_check_secs, self.config.idle_secs / 4))
+        while not self._stop_reaper.wait(interval):
+            try:
+                self.reap_idle()
+            except Exception:  # never let the reaper die
+                log.exception("idle check failed")
+
+    def reap_idle(self, now: float | None = None) -> list[str]:
+        """Stop the servers idle for `idle_secs`; returns their paths.  A
+        server is skipped while a call holds or waits on it, or while
+        `FileSession.busy` says it is compiling or checking a proof."""
+        now = time.monotonic() if now is None else now
+        with self._lock:
+            candidates = [s for s in self._sessions.values()
+                          if s.client is not None and now - s.last_used >= self.config.idle_secs]
+        stopped = []
+        for s in candidates:
+            if not s.lock.acquire(blocking=False):
+                continue  # a call is using it
+            try:
+                if s.client is None or s.waiters or now - s.last_used < self.config.idle_secs:
+                    continue
+                if s.busy():
+                    continue
+                idle = now - s.last_used
+                log.info("stopping server for %s after %s idle", s.path, fmt.duration(idle))
+                s.stop()
+                s.idle_stopped = fmt.duration(idle)
+                stopped.append(s.path)
+            finally:
+                s.lock.release()
+        return stopped
 
     # --------------------------------------------------------------- pool
 
@@ -76,6 +119,10 @@ class Manager:
                     if self._sessions.get(path) is not s:
                         continue  # evicted between lookup and lock; try again
                 notes: list[str] = []
+                if s.idle_stopped is not None:
+                    notes.append(f"Note: the server for {path} was stopped after "
+                                 f"{s.idle_stopped} idle; restarted it.")
+                    s.idle_stopped = None
                 try:
                     if max_heap_mb is not None:
                         s.max_heap_mb = max(0, max_heap_mb)
@@ -117,6 +164,7 @@ class Manager:
 
     def shutdown(self) -> None:
         """Shut every server down (shutdown + exit, then kill), in parallel."""
+        self._stop_reaper.set()
         with self._lock:
             self._closed = True
             sessions = list(self._sessions.values())

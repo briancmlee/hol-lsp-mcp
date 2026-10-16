@@ -108,6 +108,7 @@ Environment variables:
 | `HOL_LSP_MCP_MAX_HEAP_MB` | `3000` | hard limit: Poly/ML `--maxheap` for each server; `0` for none. A file that needs more gets it from `restart(file, max_heap_mb=...)` |
 | `HOL_LSP_MCP_SOFT_MB` | `2000` | soft limit: server footprint above which `diagnostics` reports `SERVER LARGE` |
 | `HOL_LSP_MCP_SOFT_SECS` | `180` | soft limit: how long a proof may check before `diagnostics` reports it as probably looping |
+| `HOL_LSP_IDLE_SECS` | `900` | idle shutdown: a server with no tool calls for this long is stopped, freeing its heap; the next call on the file starts a fresh one and says so in its reply. Not while a call is waiting on it or a proof is still checking (a probably-looping proof does not count). `0` disables it. |
 | `HOL_LSP_GOALSTATE_BUDGET_MS` | `10000` | passed to the servers: how long (ms) HOL may spend walking a tactic for `goalState`. HOL's own default, 1500, is too short for slow tactics such as CF's `xmatch`; HOL ignores the variable before its `lsp-walker-budget` patch (see `docs/upstream-issues.md`). |
 
 Register it with Claude Code at local scope (the default scope):
